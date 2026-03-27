@@ -1,4 +1,4 @@
-name: 🔥 Wild Kernel — Garnet (android12-5.10)
+name: 🔥Wild Kernel — Garnet (android12-5.10)
 
 on:
   workflow_dispatch:
