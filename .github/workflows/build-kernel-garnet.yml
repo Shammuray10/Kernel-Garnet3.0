@@ -1,4 +1,4 @@
-name: 🔥Wild Kernel — Garnet (android12-5.10)
+name: 🔥 Wild Kernel — Garnet (android12-5.10)
 
 on:
   workflow_dispatch:
@@ -36,20 +36,10 @@ on:
         type: boolean
 
 env:
-  # ── Kernel source ──────────────────────────────────────────────
   KERNEL_BRANCH: "android12-5.10"
   KERNEL_SOURCE: "https://android.googlesource.com/kernel/common"
-
-  # ── Toolchain ──────────────────────────────────────────────────
-  # Clang 17 de Android LLVM (más reciente compatible con 5.10)
-  CLANG_VERSION: "clang-r487747c"
-  CLANG_URL: "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
-
-  # ── Target ─────────────────────────────────────────────────────
   ARCH: "arm64"
   SUBARCH: "arm64"
-
-  # ── AnyKernel3 ─────────────────────────────────────────────────
   ANYKERNEL_REPO: "https://github.com/osm0sis/AnyKernel3"
   ANYKERNEL_BRANCH: "master"
 
@@ -60,21 +50,18 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      # ── 1. Checkout del repo ──────────────────────────────────
       - name: 📥 Checkout
         uses: actions/checkout@v4
 
-      # ── 2. Dependencias del sistema ───────────────────────────
       - name: 🔧 Instalar dependencias
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ca-certificates curl flex \
             git gnupg gperf libelf-dev libncurses-dev libssl-dev \
-            lz4 python3 python3-pip repo unzip wget zip zstd \
+            lz4 python3 python3-pip unzip wget zip zstd \
             ccache cpio kmod libdw-dev
 
-      # ── 3. Caché de ccache ────────────────────────────────────
       - name: 💾 Caché ccache
         uses: actions/cache@v4
         with:
@@ -88,158 +75,100 @@ jobs:
           ccache --max-size=5G
           ccache --set-config=compression=true
 
-      # ── 4. Clonar fuentes del kernel ──────────────────────────
       - name: 📦 Clonar kernel GKI android12-5.10
         run: |
-          if [ "${{ github.event.inputs.kernel_version }}" = "latest" ]; then
-            git clone --depth=1 \
-              -b ${{ env.KERNEL_BRANCH }} \
-              ${{ env.KERNEL_SOURCE }} kernel
-          else
-            # Buscar el tag exacto de la versión pedida
-            git clone --depth=1 \
-              -b ${{ env.KERNEL_BRANCH }} \
-              ${{ env.KERNEL_SOURCE }} kernel
-            # Intentar checkout a la versión específica si existe como tag
-            cd kernel
-            git fetch --tags --depth=1 origin \
-              "refs/tags/ASB-${{ github.event.inputs.kernel_version }}:refs/tags/target" \
-              2>/dev/null && git checkout target || true
-            cd ..
-          fi
+          git clone --depth=1 \
+            -b ${{ env.KERNEL_BRANCH }} \
+            ${{ env.KERNEL_SOURCE }} kernel
 
-      # ── 5. Descargar toolchain Clang ──────────────────────────
-      - name: 🛠️ Descargar Clang ${{ env.CLANG_VERSION }}
+      - name: 🛠️ Descargar Clang (Android prebuilt)
         run: |
-          mkdir -p toolchain/clang
-          wget -q \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/${{ env.CLANG_VERSION }}.tar.gz" \
-            -O clang.tar.gz
-          tar -xzf clang.tar.gz -C toolchain/clang
+          mkdir -p toolchain
+
+          git clone --depth=1 \
+            https://gitlab.com/Matrixx-Devices/android_prebuilts_clang_host_linux-x86_clang-r487747c.git \
+            toolchain/clang
+
           echo "CLANG_PATH=$(pwd)/toolchain/clang/bin" >> $GITHUB_ENV
 
-          # GCC cross-compiler (aarch64) como fallback
-          wget -q \
-            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz" \
-            -O gcc64.tar.gz
-          mkdir -p toolchain/gcc64
-          tar -xzf gcc64.tar.gz -C toolchain/gcc64
-          echo "GCC64_PATH=$(pwd)/toolchain/gcc64/bin" >> $GITHUB_ENV
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+            toolchain/gcc64
 
-      # ── 6. Integrar KernelSU ──────────────────────────────────
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
+            toolchain/gcc32
+
+          echo "GCC64_PATH=$(pwd)/toolchain/gcc64/bin" >> $GITHUB_ENV
+          echo "GCC32_PATH=$(pwd)/toolchain/gcc32/bin" >> $GITHUB_ENV
+
+          toolchain/clang/bin/clang --version
+
       - name: 🔐 Integrar ${{ github.event.inputs.ksu_variant }}
         working-directory: kernel
         run: |
           KSU_VARIANT="${{ github.event.inputs.ksu_variant }}"
-
           if [ "$KSU_VARIANT" = "Wild-KSU" ]; then
-            echo "→ Integrando Wild-KSU (wild-susfs branch)"
             curl -LSs \
               "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" \
               | bash -s wild-susfs
           else
-            echo "→ Integrando KernelSU-Next"
             curl -LSs \
               "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
               | bash -s next-susfs
           fi
 
-      # ── 7. Aplicar parche SUSFS ───────────────────────────────
-      - name: 🛡️ Aplicar parche SUSFS ${{ github.event.inputs.susfs_version }}
+      - name: 🛡️ Aplicar parche SUSFS
         working-directory: kernel
         run: |
-          SUSFS_VER="${{ github.event.inputs.susfs_version }}"
-          SUSFS_PATCH_URL="https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android12-5.10/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch"
+          wget -q \
+            "https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android12-5.10/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch" \
+            -O susfs.patch
+          patch -p1 --forward --fuzz=3 < susfs.patch || true
 
-          echo "→ Descargando parche SUSFS para gki-android12-5.10"
-          wget -q "$SUSFS_PATCH_URL" -O susfs.patch
-
-          # Aplicar con tolerancia a offsets menores
-          patch -p1 --forward --reject-file=/dev/null \
-            < susfs.patch || \
-          patch -p1 --forward --fuzz=3 \
-            < susfs.patch
-
-          echo "✅ SUSFS aplicado"
-
-      # ── 8. Aplicar parche Baseband Guard (opcional) ───────────
       - name: 🛡️ Aplicar Baseband Guard (BBG)
         if: ${{ github.event.inputs.enable_bbg == 'true' }}
         working-directory: kernel
         run: |
-          echo "→ Clonando parches BBG"
           git clone --depth=1 \
-            https://github.com/vc-teahouse/Baseband-guard \
-            /tmp/bbg
-
+            https://github.com/vc-teahouse/Baseband-guard /tmp/bbg
           if [ -f /tmp/bbg/kernel_patch/bbg.patch ]; then
-            patch -p1 --forward --fuzz=3 < /tmp/bbg/kernel_patch/bbg.patch
-            echo "✅ BBG aplicado"
+            patch -p1 --forward --fuzz=3 < /tmp/bbg/kernel_patch/bbg.patch || true
           else
-            echo "⚠️ No se encontró bbg.patch — saltando BBG"
+            echo "⚠️ bbg.patch no encontrado, saltando"
           fi
 
-      # ── 9. Aplicar parches de optimización ────────────────────
-      - name: ⚡ Aplicar optimizaciones de rendimiento
+      - name: ⚡ Aplicar optimizaciones
         working-directory: kernel
         run: |
-          # ── BBR TCP ──────────────────────────────────────────
           if [ "${{ github.event.inputs.enable_bbr }}" = "true" ]; then
-            echo "→ Activando BBR TCP"
             scripts/config --file arch/arm64/configs/gki_defconfig \
-              -e TCP_CONG_BBR \
-              -e NET_SCH_FQ
+              -e TCP_CONG_BBR -e NET_SCH_FQ
           fi
 
-          # ── LTO Thin ─────────────────────────────────────────
           if [ "${{ github.event.inputs.enable_lto }}" = "true" ]; then
-            echo "→ Activando LTO Thin"
             scripts/config --file arch/arm64/configs/gki_defconfig \
-              -e LTO_CLANG \
-              -e LTO_CLANG_THIN \
-              -d LTO_CLANG_FULL \
-              -d LTO_NONE
+              -e LTO_CLANG -e LTO_CLANG_THIN \
+              -d LTO_CLANG_FULL -d LTO_NONE
           fi
 
-          # ── Schedulers de I/O ────────────────────────────────
-          echo "→ Activando schedulers BFQ + Kyber"
           scripts/config --file arch/arm64/configs/gki_defconfig \
-            -e IOSCHED_BFQ \
-            -e BFQ_GROUP_IOSCHED \
-            -e MQ_IOSCHED_KYBER
-
-          # ── zRAM compresores ─────────────────────────────────
-          echo "→ Activando LZ4 + ZSTD para zRAM"
-          scripts/config --file arch/arm64/configs/gki_defconfig \
-            -e ZRAM \
-            -e ZRAM_DEF_COMP_LZ4 \
-            -e CRYPTO_LZ4 \
-            -e CRYPTO_ZSTD
-
-          # ── IP_SET + WireGuard ───────────────────────────────
-          echo "→ Activando IP_SET y WireGuard"
-          scripts/config --file arch/arm64/configs/gki_defconfig \
-            -e IP_SET \
-            -e IP_SET_HASH_IP \
+            -e IOSCHED_BFQ -e BFQ_GROUP_IOSCHED \
+            -e MQ_IOSCHED_KYBER \
+            -e ZRAM -e CRYPTO_LZ4 -e CRYPTO_ZSTD \
             -e WIREGUARD
 
-          # ── Ptrace fix (<5.16) ───────────────────────────────
-          echo "→ Activando fix ptrace para kernel < 5.16"
-          scripts/config --file arch/arm64/configs/gki_defconfig \
-            -e KSU_SUSFS_SUS_PATH \
-            -e KSU_SUSFS_TRY_UMOUNT \
-            -e KSU_SUSFS_SPOOF_UNAME
-
-          echo "✅ Configuración de optimizaciones aplicada"
-
-      # ── 10. Compilar kernel ───────────────────────────────────
       - name: 🔨 Compilar kernel
         working-directory: kernel
         run: |
-          export PATH="${{ env.CLANG_PATH }}:${{ env.GCC64_PATH }}:$PATH"
+          export PATH="${{ env.CLANG_PATH }}:${{ env.GCC64_PATH }}:${{ env.GCC32_PATH }}:$PATH"
 
-          # Flags base de compilación
-          MAKE_FLAGS=(
+          LTO_SUFFIX=""
+          if [ "${{ github.event.inputs.enable_lto }}" = "true" ]; then
+            LTO_SUFFIX="-LTO"
+          fi
+
+          MAKE_ARGS=(
             ARCH=${{ env.ARCH }}
             SUBARCH=${{ env.SUBARCH }}
             CC="ccache clang"
@@ -255,84 +184,53 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu-
             LLVM=1
             LLVM_IAS=1
+            LOCALVERSION="-Wild-garnet${LTO_SUFFIX}"
           )
 
-          # LTO Thin requiere flags adicionales
-          if [ "${{ github.event.inputs.enable_lto }}" = "true" ]; then
-            MAKE_FLAGS+=(
-              LOCALVERSION="-Wild-garnet-LTO"
-            )
-          else
-            MAKE_FLAGS+=(
-              LOCALVERSION="-Wild-garnet"
-            )
-          fi
+          make "${MAKE_ARGS[@]}" gki_defconfig
 
-          echo "→ Generando .config desde gki_defconfig"
-          make "${MAKE_FLAGS[@]}" gki_defconfig
+          make "${MAKE_ARGS[@]}" -j$(nproc) \
+            Image Image.lz4 2>&1 | tee build.log
 
-          echo "→ Compilando con $(nproc) hilos"
-          make "${MAKE_FLAGS[@]}" \
-            -j$(nproc) \
-            Image Image.lz4 \
-            2>&1 | tee build.log
-
-          echo "✅ Compilación completada"
           ls -lh arch/arm64/boot/Image*
 
-      # ── 11. Empaquetar con AnyKernel3 ─────────────────────────
       - name: 📦 Empaquetar AnyKernel3
         run: |
           git clone --depth=1 \
             -b ${{ env.ANYKERNEL_BRANCH }} \
-            ${{ env.ANYKERNEL_REPO }} \
-            AnyKernel3
+            ${{ env.ANYKERNEL_REPO }} AnyKernel3
 
-          # Copiar imagen compilada
           cp kernel/arch/arm64/boot/Image AnyKernel3/
 
-          # Obtener versión real del kernel compilado
           KVER=$(cat kernel/include/generated/utsrelease.h \
-            | sed 's/.*"\(.*\)".*/\1/' 2>/dev/null \
-            || echo "5.10-android12")
+            | sed 's/.*"\(.*\)".*/\1/' 2>/dev/null || echo "5.10-android12")
+          DATE=$(date +%Y-%m)
+          ZIP_NAME="${KVER}-${DATE}-AnyKernel3.zip"
 
-          # Configurar AnyKernel3 para GKI (sin device check)
           cat > AnyKernel3/anykernel.sh << 'AKEOF'
-          # AnyKernel3 — Wild Kernel GKI (garnet)
           properties() {
-            kernel.string=Wild Kernel GKI — Redmi Note 13 Pro 5G (garnet)
+            kernel.string=Wild Kernel GKI Garnet
             do.devicecheck=0
             do.modules=0
             do.systemless=1
             do.cleanup=1
             do.cleanuponabort=0
-            supported.versions=
-            supported.patchlevels=
-            supported.vendorpatchlevels=
           }
-
           block=/dev/block/bootdevice/by-name/boot;
           is_slot_device=1;
           ramdisk_compression=auto;
           patch_vbmeta_flag=auto;
-
           . tools/ak3-core.sh;
           . split_img;
           . flash_image;
           AKEOF
-
-          # Nombre del ZIP final
-          DATE=$(date +%Y-%m)
-          ZIP_NAME="${KVER}-${DATE}-AnyKernel3.zip"
 
           cd AnyKernel3
           zip -r9 "../${ZIP_NAME}" . -x ".git/*" -x "*.md"
           cd ..
 
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
-          echo "✅ ZIP creado: ${ZIP_NAME} ($(du -sh ${ZIP_NAME} | cut -f1))"
 
-      # ── 12. Subir como artifact ───────────────────────────────
       - name: 📤 Subir artifact
         uses: actions/upload-artifact@v4
         with:
@@ -340,8 +238,7 @@ jobs:
           path: "*.zip"
           retention-days: 30
 
-      # ── 13. Log de build (siempre, aunque falle) ──────────────
-      - name: 📋 Subir log de compilación
+      - name: 📋 Subir log
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -349,18 +246,15 @@ jobs:
           path: kernel/build.log
           retention-days: 7
 
-      # ── 14. Resumen del build ─────────────────────────────────
       - name: 📊 Resumen
         if: success()
         run: |
           echo "## ✅ Build completado" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| **ZIP** | \`${{ env.ZIP_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **KSU** | ${{ github.event.inputs.ksu_variant }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **SUSFS** | ${{ github.event.inputs.susfs_version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **LTO Thin** | ${{ github.event.inputs.enable_lto }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **BBR** | ${{ github.event.inputs.enable_bbr }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **BBG** | ${{ github.event.inputs.enable_bbg }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Clang** | ${{ env.CLANG_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          
