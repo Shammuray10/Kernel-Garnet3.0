@@ -1,97 +1,176 @@
 name: 🔥 Wild Kernel — Garnet (android12-5.10)
 
-on:
-  workflow_dispatch:
-    # ... (tus inputs se mantienen igual)
+on: workflow_dispatch: inputs: kernel_branch: description: "Kernel branch to build" required: false default: "android12-5.10" kernel_source: description: "Kernel source repo" required: false default: "https://android.googlesource.com/kernel/common" defconfig: description: "Defconfig target" required: false default: "gki_defconfig" anykernel_repo: description: "AnyKernel3 repo" required: false default: "https://github.com/osm0sis/AnyKernel3" anykernel_branch: description: "AnyKernel3 branch" required: false default: "master" release_name: description: "Release name" required: false default: "Wild Kernel"
 
-env:
-  KERNEL_BRANCH: "android12-5.10"
-  KERNEL_SOURCE: "https://android.googlesource.com/kernel/common"
-  # Solución a advertencia de Node.js
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true 
-  ARCH: "arm64"
-  SUBARCH: "arm64"
-  ANYKERNEL_REPO: "https://github.com/osm0sis/AnyKernel3"
-  ANYKERNEL_BRANCH: "master"
+push: branches: - main - master
 
-jobs:
-  build:
-    name: 🏗️ Compilar Kernel
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
+pull_request:
 
-    steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v4
+concurrency: group: kernel-${{ github.ref }} cancel-in-progress: true
 
-      - name: 🔧 Instalar dependencias
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ca-certificates curl flex \
-            git gnupg gperf libelf-dev libncurses-dev libssl-dev \
-            lz4 python3 python3-pip unzip wget zip zstd \
-            ccache cpio kmod libdw-dev
+env: ARCH: arm64 SUBARCH: arm64 KERNEL_BRANCH: ${{ inputs.kernel_branch || 'android12-5.10' }} KERNEL_SOURCE: ${{ inputs.kernel_source || 'https://android.googlesource.com/kernel/common' }} DEFCONFIG: ${{ inputs.defconfig || 'gki_defconfig' }} ANYKERNEL_REPO: ${{ inputs.anykernel_repo || 'https://github.com/osm0sis/AnyKernel3' }} ANYKERNEL_BRANCH: ${{ inputs.anykernel_branch || 'master' }} RELEASE_NAME: ${{ inputs.release_name || 'Wild Kernel' }} FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true CCACHE_DIR: ${{ github.workspace }}/.ccache CCACHE_MAXSIZE: 2G
 
-      - name: 📦 Clonar kernel GKI (Corrección Error 128)
-        run: |
-          # Usamos --single-branch para evitar errores de Git 128
-          git clone --depth=1 --single-branch \
-            -b ${{ env.KERNEL_BRANCH }} \
-            ${{ env.KERNEL_SOURCE }} kernel
-          
-          # Crear el log de antemano para evitar advertencia de artifact
-          touch kernel/build.log
+jobs: build: name: 🏗️ Compilar Kernel runs-on: ubuntu-22.04 timeout-minutes: 180
 
-      - name: 🛠️ Descargar Clang (Estable 15.0.7)
-        run: |
-          mkdir -p toolchain/clang
-          CLANG_URL="https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20230510/Clang-15.0.7-20230510.tar.gz"
-          wget -q "$CLANG_URL" -O clang.tar.gz
-          tar -xzf clang.tar.gz -C toolchain/clang
-          rm clang.tar.gz
-          echo "CLANG_PATH=$(pwd)/toolchain/clang/bin" >> $GITHUB_ENV
+steps:
+  - name: 📥 Checkout
+    uses: actions/checkout@v4
 
-          # Clonar GCC con flags de estabilidad
-          git clone --depth=1 --single-branch \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
-            toolchain/gcc64
-          git clone --depth=1 --single-branch \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
-            toolchain/gcc32
+  - name: 🔧 Instalar dependencias
+    run: |
+      sudo apt-get update -qq
+      sudo apt-get install -y --no-install-recommends \
+        bc bison build-essential ca-certificates curl flex \
+        git gnupg gperf libelf-dev libncurses-dev libssl-dev \
+        lz4 python3 python3-pip unzip wget zip zstd \
+        ccache cpio kmod libdw-dev rsync dwarves file
 
-          echo "GCC64_PATH=$(pwd)/toolchain/gcc64/bin" >> $GITHUB_ENV
-          echo "GCC32_PATH=$(pwd)/toolchain/gcc32/bin" >> $GITHUB_ENV
+  - name: ⚡ Cache ccache
+    uses: actions/cache@v4
+    with:
+      path: ${{ env.CCACHE_DIR }}
+      key: ccache-${{ github.ref_name }}-${{ github.sha }}
+      restore-keys: |
+        ccache-${{ github.ref_name }}-
+        ccache-
 
-      # ... (Pasos de parches KSU, SUSFS y BBG se mantienen igual)
+  - name: 📦 Clonar kernel
+    run: |
+      git clone --depth=1 --single-branch \
+        -b "${KERNEL_BRANCH}" \
+        "${KERNEL_SOURCE}" kernel
+      cd kernel
+      touch build.log
 
-      - name: 🔨 Compilar kernel
-        working-directory: kernel
-        run: |
-          export PATH="${{ env.CLANG_PATH }}:${{ env.GCC64_PATH }}:${{ env.GCC32_PATH }}:$PATH"
-          
-          MAKE_ARGS=(
-            ARCH=${{ env.ARCH }}
-            CC="ccache clang"
-            LD=ld.lld
-            LLVM=1
-            LLVM_IAS=1
-            CROSS_COMPILE=aarch64-linux-android-
-            CROSS_COMPILE_ARM32=arm-linux-androideabi-
-            CLANG_TRIPLE=aarch64-linux-gnu-
-          )
+  - name: 🛠️ Descargar toolchain Clang
+    run: |
+      mkdir -p toolchain/clang
+      CLANG_URL="https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20230510/Clang-15.0.7-20230510.tar.gz"
+      wget -q "$CLANG_URL" -O clang.tar.gz
+      tar -xzf clang.tar.gz -C toolchain/clang --strip-components=1
+      rm -f clang.tar.gz
+      echo "CLANG_PATH=$(pwd)/toolchain/clang/bin" >> $GITHUB_ENV
 
-          make "${MAKE_ARGS[@]}" gki_defconfig
-          # El comando tee asegura que todo se guarde en build.log
-          make "${MAKE_ARGS[@]}" -j$(nproc) Image 2>&1 | tee -a build.log
+  - name: 🧰 Descargar GCC prebuilt (arm64/arm32)
+    run: |
+      git clone --depth=1 --single-branch \
+        https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+        toolchain/gcc64
+      git clone --depth=1 --single-branch \
+        https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
+        toolchain/gcc32
+      echo "GCC64_PATH=$(pwd)/toolchain/gcc64/bin" >> $GITHUB_ENV
+      echo "GCC32_PATH=$(pwd)/toolchain/gcc32/bin" >> $GITHUB_ENV
 
-      # ... (Pasos de AnyKernel3 se mantienen igual)
+  - name: 🧩 Integrar KernelSU Next
+    working-directory: kernel
+    run: |
+      curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh | bash -
 
-      - name: 📋 Subir log (Siempre)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-${{ github.run_number }}
-          path: kernel/build.log
-          if-no-files-found: warn
-          
+  - name: 🧩 Integrar SUSFS
+    working-directory: kernel
+    run: |
+      git clone --depth=1 https://github.com/sidex15/susfs4ksu susfs
+      if [ -d susfs/kernel_patches ]; then
+        find susfs/kernel_patches -name '*.patch' -print0 | sort -z | xargs -0 -r -n 1 patch -p1 < /dev/null
+      fi
+
+  - name: 🧩 Integrar ajustes opcionales
+    working-directory: kernel
+    run: |
+      # Si tu árbol tiene parches adicionales, colócalos aquí.
+      # Ejemplo:
+      # patch -p1 < ../patches/0001-something.patch
+      true
+
+  - name: ⚙️ Configurar build
+    working-directory: kernel
+    run: |
+      export PATH="${CLANG_PATH}:${GCC64_PATH}:${GCC32_PATH}:$PATH"
+      make O=out ARCH=${ARCH} ${DEFCONFIG}
+      scripts/config --file out/.config --enable CONFIG_KSU || true
+      scripts/config --file out/.config --enable CONFIG_KSU_SUSFS || true
+      scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SPOOF_UNAME || true
+      scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS || true
+      scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG || true
+      scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_OPEN_REDIRECT || true
+      scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_SUS_MAP || true
+      scripts/config --file out/.config --enable CONFIG_CPU_FREQ || true
+      scripts/config --file out/.config --enable CONFIG_CPU_FREQ_GOV_SCHEDUTIL || true
+      scripts/config --file out/.config --enable CONFIG_CPU_IDLE || true
+      scripts/config --file out/.config --enable CONFIG_NO_HZ_COMMON || true
+      scripts/config --file out/.config --enable CONFIG_NO_HZ_IDLE || true
+      scripts/config --file out/.config --enable CONFIG_ENERGY_MODEL || true
+      scripts/config --file out/.config --enable CONFIG_UCLAMP_TASK || true
+      scripts/config --file out/.config --enable CONFIG_UCLAMP_TASK_GROUP || true
+      scripts/config --file out/.config --enable CONFIG_CGROUP_SCHED || true
+      scripts/config --file out/.config --enable CONFIG_CGROUPS || true
+      scripts/config --file out/.config --disable CONFIG_DEBUG_INFO || true
+      scripts/config --file out/.config --disable CONFIG_KASAN || true
+      scripts/config --file out/.config --disable CONFIG_KCOV || true
+      scripts/config --file out/.config --disable CONFIG_DEBUG_KERNEL || true
+      yes '' | make O=out ARCH=${ARCH} olddefconfig
+
+  - name: 🔨 Compilar kernel
+    working-directory: kernel
+    env:
+      KBUILD_BUILD_USER: wild
+      KBUILD_BUILD_HOST: github
+      LLVM: 1
+      LLVM_IAS: 1
+      CC: clang
+      LD: ld.lld
+      AR: llvm-ar
+      NM: llvm-nm
+      OBJCOPY: llvm-objcopy
+      OBJDUMP: llvm-objdump
+      STRIP: llvm-strip
+      READELF: llvm-readelf
+      OBJSIZE: llvm-size
+      CROSS_COMPILE: aarch64-linux-android-
+      CROSS_COMPILE_ARM32: arm-linux-androideabi-
+      CLANG_TRIPLE: aarch64-linux-gnu-
+    run: |
+      export PATH="${CLANG_PATH}:${GCC64_PATH}:${GCC32_PATH}:$PATH"
+      export KCFLAGS="-O2"
+      export KCPPFLAGS="-O2"
+      export KCFLAGS_EXTRA=""
+      make O=out ARCH=${ARCH} -j"$(nproc)" Image modules dtbs 2>&1 | tee -a build.log
+      test -f out/arch/arm64/boot/Image
+
+  - name: 📦 Preparar AnyKernel3
+    run: |
+      rm -rf AnyKernel3
+      git clone --depth=1 --single-branch -b "${ANYKERNEL_BRANCH}" "${ANYKERNEL_REPO}" AnyKernel3
+      cp -f kernel/out/arch/arm64/boot/Image AnyKernel3/
+      if [ -f kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtb ]; then
+        true
+      fi
+      cd AnyKernel3
+      zip -r9 "${RELEASE_NAME// /_}-${{ github.run_number }}.zip" .
+
+  - name: 📋 Subir log
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: build-log-${{ github.run_number }}
+      path: kernel/build.log
+      if-no-files-found: warn
+
+  - name: 📤 Subir artefacto ZIP
+    uses: actions/upload-artifact@v4
+    with:
+      name: kernel-zip-${{ github.run_number }}
+      path: AnyKernel3/*.zip
+      if-no-files-found: error
+
+  - name: 🚀 Crear Release
+    if: github.event_name != 'pull_request'
+    uses: softprops/action-gh-release@v2
+    with:
+      tag_name: v${{ github.run_number }}
+      name: ${{ env.RELEASE_NAME }} v${{ github.run_number }}
+      files: AnyKernel3/*.zip
+      generate_release_notes: true
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
