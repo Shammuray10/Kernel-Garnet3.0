@@ -81,14 +81,15 @@ jobs:
             -b ${{ env.KERNEL_BRANCH }} \
             ${{ env.KERNEL_SOURCE }} kernel
 
-      - name: 🛠️ Descargar Clang (ZyCromerZ latest)
+      - name: 🛠️ Descargar Clang (Estable 15.0.7)
         run: |
           mkdir -p toolchain/clang
 
-          # Obtener URL del Clang más reciente via link-file de ZyCromerZ
-          CLANG_URL=$(curl -s https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-main-link.txt)
+          # Usamos un enlace permanente de ZyCromerZ para evitar errores de link caducado
+          CLANG_URL="https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20230510/Clang-15.0.7-20230510.tar.gz"
+          
           echo "→ Descargando Clang desde: $CLANG_URL"
-          wget -q "$CLANG_URL" -O clang.tar.gz
+          wget -q "$CLANG_URL" -O clang.tar.gz || { echo "❌ Error: No se pudo descargar Clang"; exit 1; }
           tar -xzf clang.tar.gz -C toolchain/clang
           rm clang.tar.gz
 
@@ -105,9 +106,6 @@ jobs:
 
           echo "GCC64_PATH=$(pwd)/toolchain/gcc64/bin" >> $GITHUB_ENV
           echo "GCC32_PATH=$(pwd)/toolchain/gcc32/bin" >> $GITHUB_ENV
-
-          # Verificar versión de Clang descargada
-          toolchain/clang/bin/clang --version
 
       - name: 🔐 Integrar ${{ github.event.inputs.ksu_variant }}
         working-directory: kernel
@@ -169,9 +167,7 @@ jobs:
           export PATH="${{ env.CLANG_PATH }}:${{ env.GCC64_PATH }}:${{ env.GCC32_PATH }}:$PATH"
 
           LTO_SUFFIX=""
-          if [ "${{ github.event.inputs.enable_lto }}" = "true" ]; then
-            LTO_SUFFIX="-LTO"
-          fi
+          [ "${{ github.event.inputs.enable_lto }}" = "true" ] && LTO_SUFFIX="-LTO"
 
           MAKE_ARGS=(
             ARCH=${{ env.ARCH }}
@@ -193,25 +189,18 @@ jobs:
           )
 
           make "${MAKE_ARGS[@]}" gki_defconfig
-
-          make "${MAKE_ARGS[@]}" -j$(nproc) \
-            Image Image.lz4 2>&1 | tee build.log
-
-          echo "✅ Imágenes generadas:"
-          ls -lh arch/arm64/boot/Image*
+          make "${MAKE_ARGS[@]}" -j$(nproc) Image Image.lz4 2>&1 | tee build.log
 
       - name: 📦 Empaquetar AnyKernel3
         run: |
-          git clone --depth=1 \
-            -b ${{ env.ANYKERNEL_BRANCH }} \
-            ${{ env.ANYKERNEL_REPO }} AnyKernel3
-
+          git clone --depth=1 -b ${{ env.ANYKERNEL_BRANCH }} ${{ env.ANYKERNEL_REPO }} AnyKernel3
+          
+          # Copiar la imagen generada
           cp kernel/arch/arm64/boot/Image AnyKernel3/
 
-          KVER=$(cat kernel/include/generated/utsrelease.h \
-            | sed 's/.*"\(.*\)".*/\1/' 2>/dev/null || echo "5.10-android12")
-          DATE=$(date +%Y-%m)
-          ZIP_NAME="${KVER}-${DATE}-AnyKernel3.zip"
+          # Configurar script de instalación
+          KVER=$(cat kernel/include/generated/utsrelease.h | sed 's/.*"\(.*\)".*/\1/' 2>/dev/null || echo "5.10-garnet")
+          ZIP_NAME="Wild-Kernel-Garnet-${KVER}-$(date +%Y%m%d).zip"
 
           cat > AnyKernel3/anykernel.sh << 'AKEOF'
           properties() {
@@ -227,8 +216,8 @@ jobs:
           ramdisk_compression=auto;
           patch_vbmeta_flag=auto;
           . tools/ak3-core.sh;
-          . split_img;
-          . flash_image;
+          split_boot;
+          flash_boot;
           AKEOF
 
           cd AnyKernel3
@@ -236,32 +225,17 @@ jobs:
           cd ..
 
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
-          echo "✅ ZIP: ${ZIP_NAME} ($(du -sh ${ZIP_NAME} | cut -f1))"
 
-      - name: 📤 Subir artifact
+      - name: 📤 Subir ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: Wild-Kernel-Garnet-${{ github.run_number }}
+          name: ${{ env.ZIP_NAME }}
           path: "*.zip"
-          retention-days: 30
 
-      - name: 📋 Subir log
+      - name: 📋 Subir build.log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-${{ github.run_number }}
+          name: build-log
           path: kernel/build.log
-          retention-days: 7
-
-      - name: 📊 Resumen
-        if: success()
-        run: |
-          echo "## ✅ Build completado" >> $GITHUB_STEP_SUMMARY
-          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **ZIP** | \`${{ env.ZIP_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **KSU** | ${{ github.event.inputs.ksu_variant }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **LTO Thin** | ${{ github.event.inputs.enable_lto }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **BBR** | ${{ github.event.inputs.enable_bbr }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **BBG** | ${{ github.event.inputs.enable_bbg }} |" >> $GITHUB_STEP_SUMMARY
           
