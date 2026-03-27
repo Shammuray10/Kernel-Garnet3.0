@@ -81,16 +81,20 @@ jobs:
             -b ${{ env.KERNEL_BRANCH }} \
             ${{ env.KERNEL_SOURCE }} kernel
 
-      - name: 🛠️ Descargar Clang (Android prebuilt)
+      - name: 🛠️ Descargar Clang (ZyCromerZ latest)
         run: |
-          mkdir -p toolchain
+          mkdir -p toolchain/clang
 
-          git clone --depth=1 \
-            https://gitlab.com/Matrixx-Devices/android_prebuilts_clang_host_linux-x86_clang-r487747c.git \
-            toolchain/clang
+          # Obtener URL del Clang más reciente via link-file de ZyCromerZ
+          CLANG_URL=$(curl -s https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-main-link.txt)
+          echo "→ Descargando Clang desde: $CLANG_URL"
+          wget -q "$CLANG_URL" -O clang.tar.gz
+          tar -xzf clang.tar.gz -C toolchain/clang
+          rm clang.tar.gz
 
           echo "CLANG_PATH=$(pwd)/toolchain/clang/bin" >> $GITHUB_ENV
 
+          # GCC aarch64 y arm para cross-compile
           git clone --depth=1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
             toolchain/gcc64
@@ -102,6 +106,7 @@ jobs:
           echo "GCC64_PATH=$(pwd)/toolchain/gcc64/bin" >> $GITHUB_ENV
           echo "GCC32_PATH=$(pwd)/toolchain/gcc32/bin" >> $GITHUB_ENV
 
+          # Verificar versión de Clang descargada
           toolchain/clang/bin/clang --version
 
       - name: 🔐 Integrar ${{ github.event.inputs.ksu_variant }}
@@ -135,7 +140,7 @@ jobs:
           if [ -f /tmp/bbg/kernel_patch/bbg.patch ]; then
             patch -p1 --forward --fuzz=3 < /tmp/bbg/kernel_patch/bbg.patch || true
           else
-            echo "⚠️ bbg.patch no encontrado, saltando"
+            echo "⚠️ bbg.patch no encontrado, saltando BBG"
           fi
 
       - name: ⚡ Aplicar optimizaciones
@@ -192,6 +197,7 @@ jobs:
           make "${MAKE_ARGS[@]}" -j$(nproc) \
             Image Image.lz4 2>&1 | tee build.log
 
+          echo "✅ Imágenes generadas:"
           ls -lh arch/arm64/boot/Image*
 
       - name: 📦 Empaquetar AnyKernel3
@@ -230,6 +236,7 @@ jobs:
           cd ..
 
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          echo "✅ ZIP: ${ZIP_NAME} ($(du -sh ${ZIP_NAME} | cut -f1))"
 
       - name: 📤 Subir artifact
         uses: actions/upload-artifact@v4
